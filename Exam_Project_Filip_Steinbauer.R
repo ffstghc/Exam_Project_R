@@ -1,0 +1,297 @@
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---  
+# Examination project in R 
+# Author: Filip **********
+# Email: *****@student.uu.se
+# Submission date: 30-Nov-2021
+# Version: 2.0
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---  
+
+
+## Library imports
+library(dplyr) # Import dplyr for pipelines
+library(ggplot2) # Import ggplot2 for boxplots
+library(ncappc) # Import for alternative, automated AUC and k calculation
+library(GGally) # Import for pairplot/correlations
+
+
+## Functions
+# Calculate total body water dependent on sex
+Calculate_TBW <- function(Sex, Age, Height, Weight) {
+  if (Sex == "M") {
+    TBW <- 2.447 - 0.09156 * Age + 0.1074 * Height + 0.3362 * Weight
+  } else
+    TBW <- -2.097 + 0.1067 * Height + 0.2466 * Weight
+  return(TBW)
+}
+
+# Numerical summary
+Summarize <- function(column) {
+  print("Mean:")
+  print(mean(column))
+  print("Median:")
+  print(median(column))
+  print("Standard deviation:")
+  print(sd(column))
+  print("Range:")
+  print(range(column))
+}
+
+# Correlation pair plots
+Plot_Correlations <- function(var1, var2, var3, Headline) {
+  plot <- ggpairs(data_PK_SNP[c(var1,var2,var3)], aes(colour = data_PK_SNP$Sex, alpha = 0.5))
+  plot <- plot + theme_minimal() + ggtitle(Headline)
+  print(plot)
+}
+
+# Boxplots for t1/2 and AUC for SNPS
+Plot_t12_AUC_Boxplots <- function(HalfLife, AreaUnderCurve, Headline) {
+  col_names <- names(data_PK_SNP) # Get column names
+  plot_list <- list() # Create empty list for appending plots
+  min_AUC <- min(AreaUnderCurve) # Find AUC minimum for combined plot
+  max_AUC <- max(AreaUnderCurve) # Find AUC maximum for combined plot
+  
+  # Plot for AUC by ks
+  for (i in c(21:25)) { # Plot for different mutations
+    plot_list[[i - 20]] <- eval(substitute(
+      ggplot(data_PK_SNP, aes(group = data_PK_SNP[, c(i)], color = data_PK_SNP[, c(i)], fill = data_PK_SNP[, c(i)]))
+      + geom_boxplot(aes(y = HalfLife, AreaUnderCurve), alpha = 0.6)
+      + facet_grid(cols = vars(data_PK_SNP[,c(i)])) 
+      + labs(x = "AUC [mg / L * h]", y = "t 1/2 [h]", title = col_names[i])
+      + xlim(c(min_AUC, max_AUC)) # Same x axis for all mutations for better comparison
+      + theme_minimal() + theme(legend.position = "None") # Set theme and remove legend
+      + scale_color_manual(values = c("#ff800e", "#006ba4", "#006ba4"))
+      + scale_fill_manual(values = c("#ff800e", "#006ba4", "#006ba4")),
+      list(i = i)
+    ))
+  }
+  
+  # Arrange box plots in grid
+  plot <- ggpubr::ggarrange(plotlist = plot_list, ncol = 3, nrow = 2)
+  ggpubr::annotate_figure(plot, top = Headline)
+  
+}
+
+# Plot t_1/2 against TBW with linear regression
+Plot_t12_TBW <- function(HalfLife, Headline) {
+  plot <- ggplot(data_PK_SNP, aes(x = TBW, y = HalfLife, color = Sex)) # Coloring by sex
+  plot <- plot + geom_point(alpha = 0.7) + geom_smooth(method = "lm") # Create scatter plot + add linear regression
+  plot <- plot + labs(x = "Total body water [L]", y = "t 1/2 [h]") + theme_minimal() # Add labeling + theme
+  plot <- plot + ggtitle(Headline)
+  print(plot)
+}
+
+
+# Data Management ---------------------------------------------------------
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---  
+# Must include: data import, variable assignment, dataset reorganisation (merge + long format),
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---  
+
+
+# Create path + file name variable
+dir <- "" # Assume you're in the working directory or change this
+file_name_PK <- "BPI889_PK_17.csv"
+file_name_SNP <- "BPI889_SNP_17.txt"
+
+path_PK <- paste(dir, file_name_PK, sep = '')
+path_SNP <- paste(dir, file_name_SNP, sep = '')
+
+## Import files into data.frame and assign variables
+data_PK <- read.table(path_PK, sep = ",", header = T, na.strings = ".") # Blood concentrations
+# separator = "," since the data is comma separated
+# header = T since a header is included which will be our column names
+# na.strings = "." since missing values are indicated by dots (".")
+
+data_SNP <- read.table(path_SNP, header = T, skipNul = T) # Polymorphism data
+# header = T since a header is included which will be our column names
+# skipNul = T since tab separator ("\t") doesn't work to get the data in the correct columns
+
+# Rename patient ID column
+ind_X <- which(colnames(data_PK) == "X") # Find index of column with name "X"
+names(data_PK)[ind_X] <- "ID" # Reassign column name to "ID" for data_PK
+data_SNP <- tibble::rownames_to_column(data_SNP, "ID") # Make rownames first column for data_SNP
+
+# Combine data_PK and data_SNP
+data_PK_SNP <- merge(data_PK, data_SNP, by = "ID")
+
+# Get time points from column names
+time_pts <- as.numeric(colnames(data_PK_SNP) %>% { gsub("Time.", "", .) } %>% { gsub(".h", "", .) })
+names(data_PK)[2:16] <- time_pts[2:16] # Rename columns
+
+## Convert merged data from wide to long format while removing NAs
+# Full data in long format
+data_PK_SNP_long <- tidyr::gather(data_PK_SNP, value = VALUE, key = KEY,-ID, na.rm = T)
+
+
+# Variable calculations ---------------------------------------------------
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---  
+# Must include: calculation of body size measurement, categorization of body size measurement, 
+# PK variable calculation
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---  
+
+
+# Calculate total body water + find cmax 
+ind_start <- which(colnames(data_PK) == 0.15) # Find index of column with start concentration at t = 0.15 h
+ind_end <- which(colnames(data_PK) == 24) # Find index of column with end concentration at t = 24 h
+
+for (i in 1:nrow(data_PK_SNP)) { # Loop TBW calculation through all patients for TBW, cmax calculation
+  data_PK_SNP$TBW[i] <- Calculate_TBW(data_PK_SNP$Sex[i], data_PK_SNP$Age..yrs.[i], data_PK_SNP$Height..cm.[i], data_PK_SNP$Weight..kg.[i]) # Calculate and append TBW
+  data_PK_SNP$c_max[i] <- max(data_PK_SNP[i, ind_start:ind_end], na.rm = T) # Find and append cmax
+}
+
+# Split into TBW < 40 L and TBW > 40 L
+data_PK_SNP$TBW_grouped <- data_PK_SNP$TBW # copy data to replace by 0s and 1s for categories
+data_PK_SNP$TBW_grouped[data_PK_SNP$TBW_grouped < 40] <- 0
+data_PK_SNP$TBW_grouped[data_PK_SNP$TBW_grouped > 40] <- 1
+data_PK_SNP$TBW_grouped <- factor(data_PK_SNP$TBW_grouped, labels = c("TBW < 40 L", "TBW > 40 L"), levels = c(0,1)) # Factorize and relabel
+
+## Calculate t1/2, AUC, k
+na_24h <- which(is.na(data_PK_SNP$Time.24.h)) # Rows/patients where t = 24 h is missing -> Extrapolating necessary
+na_015h <- which(is.na(data_PK_SNP$Time.0.15.h)) # Rows/patients where t = 24 h is missing -> Extrapolating necessary
+
+# Extrapolate 24 h data
+for (i in na_24h) {
+  x <- time_pts[14:15]
+  y <- as.numeric(data_PK_SNP[i, 14:15])
+  data <- data.frame(y = y, x = x) # Combine data
+  model <- lm(y ~ x, data) # Create linear model
+  pred_24h <- predict(model, newdata =  data.frame(x = time_pts[16]))
+  if (pred_24h < 0) {
+  data_PK_SNP$Time.24.h[i]  <- 0 # Set to 0 because negative concentrations aren't possible
+  } else {
+  data_PK_SNP$Time.24.h[i]  <- pred_24h  # Set to extrapolated concentration
+  }
+}
+
+# Extrapolate 0.15 h data
+for (i in na_015h) {
+  x <- time_pts[3:4]
+  y <- as.numeric(data_PK_SNP[i, 3:4])
+  data <- data.frame(y = y, x = x) # Combine data
+  model <- lm(y ~ x, data) # Create linear model
+  pred_015h <- predict(model, newdata =  data.frame(x = time_pts[2]))
+  if (pred_015h < 0) {
+    data_PK_SNP$Time.0.15.h[i]  <- 0 # Set to 0 because negative concentrations aren't possible
+  } else {
+    data_PK_SNP$Time.0.15.h[i]  <- pred_015h  # Set to extrapolated concentration
+  }
+}
+
+# Interpolate other missing values
+missing_NAs <- list() # Create empty list to fill
+for (i in 1:ncol(data_PK_SNP)) {
+  missing_NAs[[i]] <- which(is.na(data_PK_SNP[i])) # Create list with indices of all missing values
+}
+
+for (time in 2:16) { # Loop through all time points
+    if (length(missing_NAs[[time]]) == 0) { # Skip where no values are missing
+      time <- time + 1 
+    } else {  
+      for (i in unlist(missing_NAs[time])) { # Loop through missing values
+      y <- data_PK_SNP[i, (time - 1):(time + 1)] # Values before and after the missing value
+      x <- time_pts[(time - 1):(time + 1)] # Timepoints before and after the missing value
+      pol <- approx(x, y, n = 3) # Calculate interpoalted value
+      data_PK_SNP[i,time] <- pol$y[2] # Replace NA with interpolated number
+    }
+  }
+}
+
+# Calculate ks 
+for (patient in 1:nrow(data_PK_SNP)) { # Loop through all patients
+  time <- 16 # Begin search for non-zero concentrations at latest time point (column 16)
+  while (time > 2) { # Loop through all time points 
+    if (data_PK_SNP[patient, time] & data_PK_SNP[patient, time - 1] != 0) { # Until two neigbohring non-zero concentrations are found
+      t <- time_pts[time] - time_pts[time - 1] # Calculate time difference
+      data_PK_SNP$k[patient] <- 
+        abs((log(data_PK_SNP[patient, time]) - log(data_PK_SNP[patient, time - 1])) / t) # Calculate "k" and make positive
+      break
+    } else {
+      time <- time - 1 # Go to next time point
+    }
+  }
+}
+
+# Calculate half-life
+data_PK_SNP$t_12 <- log(2) / data_PK_SNP$k 
+
+# Calculate AUC from Trs and ks
+Trs <- list()
+for (i in 3:16) { # Loop over all concentrations/time points
+  Trs[i - 2] <- (data_PK_SNP[i] + data_PK_SNP[i - 1]) / 2 * (time_pts[i] - time_pts[i - 1])
+}
+
+Trs <- do.call(cbind, Trs) # Create data.frame from list
+data_PK_SNP$AUC <- rowSums(Trs)/data_PK_SNP$k # Calculate AUC from sum of TRs and k
+ 
+## Calculate AUC, t_1/2 and k by package ncappc
+# Time and concentration in long format
+data_PK[2:16] <- data_PK_SNP[2:16] # Copy with inter-/extrapolated values
+data_conc_long <- tidyr::gather(data_PK[1:16], value = Concentration, key = Time, -ID, na.rm = T)
+data_conc_long$Time <- as.numeric(data_conc_long$Time) # Make time points numeric
+names(data_conc_long) <- c("ID", "TIME", "DV") # Rename columns for ncappc
+
+ncappc(obsFile = data_conc_long, onlyNCA = T, extrapolate = T, printOut = F, evid = FALSE, noPlot = T) # let ncappc do the work
+data_PK_SNP$k_by_package <- ncaOutput$Lambda_z # Get k
+data_PK_SNP$t_12_by_package <- ncaOutput$HL_Lambda_z # Get t1/2
+data_PK_SNP$AUC_by_package <- ncaOutput$AUClast # Get AUC
+
+
+# Data Exploration --------------------------------------------------------
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---  
+# Must include: numerical summary of PK variables, graphical assessment of 1) PK profiles,
+# 2) PK variable correlations, 3)PK variable-SNP correlations, 
+# 4) PK variable-body size measurement correlation with linear regression
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---  
+
+
+# Numerical summary
+Summarize(data_PK_SNP$c_max)
+Summarize(data_PK_SNP$t_12)
+Summarize(data_PK_SNP$AUC)
+Summarize(data_PK_SNP$t_12_by_package)
+Summarize(data_PK_SNP$AUC_by_package)
+
+## Graphical assessment
+# PK profiles
+min_conc <- min(data_PK_SNP[2:16]) # Find minimum concentration for combined plot
+
+for (i in c(21:25)) {
+  data_PK_SNP[,i] <- factor(data_PK_SNP[,i], labels = c("Wildtype", "Heterogeneous", "Homogenous")) # Factorize and rename
+}
+
+# Ggplot Line Plot
+ggplot(data = data_conc_long, aes(x = TIME, y = DV, group = ID)) +
+  geom_line() + theme_minimal() + ylab("Concentration [mg / L]") + xlab("Time [h")
+
+# Create correlation pairplots
+Plot_Correlations(27, 30, 31, "Values from my script") # Plot for script values
+Plot_Correlations(27, 33, 34, "Values from ncappc") # Plot for ncappc values
+
+# # PK variable-SNP correlations (Boxplots)
+Plot_t12_AUC_Boxplots(data_PK_SNP$t_12, data_PK_SNP$AUC, "Values from my script")
+Plot_t12_AUC_Boxplots(data_PK_SNP$t_12_by_package, data_PK_SNP$AUC_by_package, "Values from ncappc")
+
+# PK variable-body size measurement correlation with linear regression
+Plot_t12_TBW(data_PK_SNP$t_12, "Values from my script")
+Plot_t12_TBW(data_PK_SNP$t_12_by_package, "Values from ncappc")
+
+
+
+# Statistical testing -----------------------------------------------------
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---  
+# Must include: ANOVA of PK variables for SNPs, t-test of PK variable for body size measurement groups 
+# --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---  
+
+
+# ANOVA (AUC/cmax for SNPs)
+result_anova_AUC <- aov(AUC ~ T134A + A443G + G769C + G955C + A990C , data = data_PK_SNP)
+summary(result_anova_AUC) # for values from script
+
+result_anova_AUC <- aov(AUC_by_package ~ T134A + A443G + G769C + G955C + A990C , data = data_PK_SNP)
+summary(result_anova_AUC) # for values from ncappc
+
+result_anova_cmax <- aov(c_max ~ T134A + A443G + G769C + G955C + A990C , data = data_PK_SNP)
+summary(result_anova_cmax) # for cmax
+
+# T-Test (t1/2 for TBW > 40 L and TBW < 40 L)
+t.test(data_PK_SNP$t_12 ~ data_PK_SNP$TBW_grouped) # for values from script
+t.test(data_PK_SNP$t_12_by_package ~ data_PK_SNP$TBW_grouped) # for values from ncappc
